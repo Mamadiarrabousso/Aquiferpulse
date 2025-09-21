@@ -1,0 +1,17 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Data we don't need in git
+data/raw/
+data/cache/
+logs/
+*.pdf      # weekly_brief.pdf is generated, not stored
+
+# Misc
+*.zip

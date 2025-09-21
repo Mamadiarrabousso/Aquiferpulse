@@ -1,0 +1,184 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>AquiferPulse — Senegal</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html,body,#map{height:100%;margin:0}
+    .legend{position:absolute;bottom:14px;left:14px;background:#fff;padding:8px;border-radius:6px;
+            box-shadow:0 1px 4px rgba(0,0,0,.2)}
+  </style>
+</head>
+<body>
+  <!-- Map -->
+  <div id="map" style="height:100vh;"></div>
+
+  <!-- Month picker (top-left) -->
+  <div id="controls" style="position:absolute;top:10px;left:10px;z-index:1000;background:#fff;padding:8px 10px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.15);">
+    <label style="font:14px/1.2 sans-serif;">Month:
+      <input type="month" id="monthPicker">
+    </label>
+    <button id="goBtn">Go</button>
+  </div>
+
+  <!-- Right-side panel -->
+  <div id="side" style="position:absolute;top:10px;right:10px;z-index:1000;background:#fff;padding:10px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.15);max-width:260px;">
+    <h3 style="margin:.2rem 0">Top 10 to watch</h3>
+    <ol id="top10" style="margin:.2rem 0 .5rem 1.2rem;"></ol>
+    <small id="asOf"></small>
+  </div>
+
+  <!-- Status badge (bottom-right) -->
+  <div id="statusBadge" style="position:absolute;bottom:10px;right:10px;background:#fff;padding:6px 10px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.15);font:14px/1.2 sans-serif;">
+    Loading status…
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+  const API_BASE = 'http://127.0.0.1:8000';
+  const COLORS   = { alert:'#d7191c', watch:'#fdae61', normal:'#1a9641', 'no-data':'#9e9e9e' };
+
+  // ---- Map should render even with no data ----
+  const map = L.map('map').setView([14.5, -15.5], 6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OSM' }).addTo(map);
+// Legend (once)
+const legend = L.control({ position: 'bottomright' }); // or 'bottomleft' if you prefer
+legend.onAdd = function () {
+  const div = L.DomUtil.create('div', 'legend');
+  div.style.background = '#fff';
+  div.style.padding = '8px';
+  div.style.borderRadius = '6px';
+  div.style.boxShadow = '0 1px 4px rgba(0,0,0,.2)';
+  div.style.lineHeight = '1.2';
+  div.innerHTML =
+    '<b>Status</b><br>' +
+    Object.entries(COLORS).map(([k,c]) =>
+      `<div style="margin:3px 0">
+         <span style="display:inline-block;width:12px;height:12px;background:${c};margin-right:6px;"></span>${k}
+       </div>`
+    ).join('');
+  return div;
+};
+legend.addTo(map);
+
+  let currentLayer = null, lastTop10 = [];
+
+  function drawMap(gj){
+    try {
+      if (currentLayer) map.removeLayer(currentLayer);
+      currentLayer = L.geoJSON(gj, {
+        style: f => ({ color:'#333', weight:0.8, fillOpacity:0.7, fillColor: COLORS[(f.properties?.class)||'no-data'] }),
+        onEachFeature: (f, l) => {
+          const p = f.properties || {};
+          const fmt = x => (x===null||x===undefined||isNaN(x)) ? '—' : Number(x).toFixed(3);
+          l.bindPopup([
+            `<b>Basin</b>: ${p.name ?? p.basin_id ?? 'n/a'}`,
+            `<b>Date</b>: ${p.date ?? 'n/a'}`,
+            `<b>ASI</b>: ${fmt(p.asi)} (${p.class ?? 'n/a'})`,
+            `<b>twsa_z</b>: ${fmt(p.twsa_z)}`,
+            `<b>sm_z</b>: ${fmt(p.sm_z)}`,
+            `<b>rain_def_z</b>: ${fmt(p.rain_def_z)}`
+          ].join('<br>'));
+        }
+      }).addTo(map);
+      if (currentLayer.getLayers().length) map.fitBounds(currentLayer.getBounds(), { padding:[20,20] });
+    } catch (e) {
+      console.error('drawMap error', e);
+    }
+  }
+
+  function loadMonth(ym){ // ym='YYYY-MM'
+    const date = ym + '-01';
+    return fetch(`${API_BASE}/asi/at?date=${date}`)
+      .then(r => { if(!r.ok) throw new Error(`/asi/at ${r.status}`); return r.json(); })
+      .then(gj => {
+        drawMap(gj);
+        document.getElementById('asOf').textContent = `As of ${ym}-01`;
+        loadTop10(ym);
+        loadSummary(ym);
+      })
+      .catch(err => {
+        console.error(err);
+        document.getElementById('statusBadge').textContent = `Status unavailable (${err.message})`;
+        alert(`No data for ${ym}. Choose a month within your data range.`);
+      });
+  }
+
+  function loadTop10(ym){
+    const ol = document.getElementById('top10');
+    const q  = ym ? `&date=${ym}-01` : '';
+    fetch(`${API_BASE}/asi/top10?classes=alert,watch&limit=10${q}`)
+      .then(r => { if(!r.ok) throw new Error(`/asi/top10 ${r.status}`); return r.json(); })
+      .then(rows => {
+        lastTop10 = rows;
+        ol.innerHTML = '';
+        if (!rows.length) { ol.innerHTML = '<li>All basins normal this month 🎉</li>'; return; }
+        rows.forEach(r => {
+          const li = document.createElement('li');
+          li.textContent = `${r.name || r.basin_id}: ASI ${r.asi} (${r.class})`;
+          ol.appendChild(li);
+        });
+      })
+      .catch(err => { ol.innerHTML = '<li>Top10 error: ' + err.message + '</li>'; });
+  }
+
+  function loadSummary(ym){
+    const q = ym ? `?date=${ym}-01` : '';
+    fetch(`${API_BASE}/asi/summary${q}`)
+      .then(r => r.json())
+      .then(s => {
+        const c = s.counts || {};
+        document.getElementById('statusBadge').textContent =
+          `As of ${s.as_of || 'n/a'} — alert: ${c.alert||0} · watch: ${c.watch||0} · normal: ${c.normal||0} · no-data: ${c['no-data']||0}`;
+      })
+      .catch(()=>{ document.getElementById('statusBadge').textContent = 'Status unavailable'; });
+  }
+
+  function loadLatest(){
+    return fetch(`${API_BASE}/asi/latest`)
+      .then(r => r.json())
+      .then(gj => {
+        drawMap(gj);
+        const feat = (gj.features||[]).find(f => f.properties?.date);
+        const asof = feat ? feat.properties.date : null;
+        const ym = asof ? asof.slice(0,7) : null;
+        if (ym) {
+          document.getElementById('monthPicker').value = ym;
+          loadTop10(ym); loadSummary(ym);
+        } else {
+          loadTop10(null); loadSummary(null);
+        }
+      })
+      .catch(err => {
+        console.error('latest error', err);
+        document.getElementById('statusBadge').textContent = `Status unavailable (${err.message})`;
+      });
+  }
+
+  // Go button
+  document.getElementById('goBtn').addEventListener('click', () => {
+    const ym = document.getElementById('monthPicker').value;
+    if (ym) loadMonth(ym);
+  });
+
+  // ---- Initial load: clamp to [min,max] from the table; fallback to /asi/latest ----
+  (async function init(){
+    const mp = document.getElementById('monthPicker');
+    try {
+      const r = await fetch(`${API_BASE}/asi/date_range`);
+      if (!r.ok) throw new Error('date_range HTTP ' + r.status);
+      const {min, max} = await r.json();
+      if (min) mp.min = min.slice(0,7);
+      if (max) mp.max = max.slice(0,7);
+      const ym = max ? max.slice(0,7) : null;
+      if (ym) { mp.value = ym; await loadMonth(ym); return; }
+    } catch (e) {
+      console.warn('date_range failed; falling back to /asi/latest', e);
+    }
+    await loadLatest();
+  })();
+  </script>
+</body>
+</html>
